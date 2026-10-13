@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        python: ['3.9', '3.13']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Unit tests (no mod files needed)
+        run: python -m unittest discover -s tests -v
+      - name: JS syntax check
+        run: |
+          node --check web/app.js
+          node --check web/viewer.js
+
+  release:
+    # 打 v* 标签时打包成单个 exe 并附加到 GitHub Release（exe 里不含任何 mod 文件）
+    needs: test
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build exe
+        run: |
+          python -m pip install pyinstaller==6.10.0
+          pyinstaller --onefile --windowed --name KipfelWardrobe --add-data "web;web" wardrobe.py
+      - name: Smoke test the exe
+        # CI 上没有 mod 文件，自检会报「找不到原 mod」；这里只确认 exe 能启动、打包进去的模块都能加载
+        shell: pwsh
+        run: |
+          Start-Process -FilePath dist\KipfelWardrobe.exe -ArgumentList '--selftest','--json-out','smoke.json' -Wait
+          python -c "import json; d = json.load(open('smoke.json', encoding='utf-8')); assert d['results'], d; print(d['results'][0])"
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/KipfelWardrobe.exe

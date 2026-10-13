@@ -1,0 +1,21 @@
+# 运行时数据：设置、日志、addonlist 备份（含个人信息，不要提交）
+data/
+
+# Python
+__pycache__/
+*.pyc
+
+# 打包产物
+build/
+dist/
+*.spec
+
+# 本工具的临时文件
+*.kipfel.tmp
+
+# 永远不要提交原 mod 的任何文件
+*.vpk
+*.vtf
+*.mdl
+*.vvd
+*.vtx

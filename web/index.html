@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="token" content="%%TOKEN%%">
+<title>Kipfel 装扮工具</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M5 13 8 3l6 7h4l6-7 3 10v9a8 8 0 0 1-8 8h-8a8 8 0 0 1-8-8z' fill='%23c3d36b'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/web/style.css">
+</head>
+<body>
+<div class="app">
+  <header class="topbar">
+    <div class="brand">
+      <svg class="logo" viewBox="0 0 32 32" aria-hidden="true"><path d="M5 13 8 3l6 7h4l6-7 3 10v9a8 8 0 0 1-8 8h-8a8 8 0 0 1-8-8z"/></svg>
+      <div>
+        <div class="brand-title">Kipfel 装扮工具</div>
+        <div class="brand-sub">战术版 · 替换 Louis <span id="appVersion"></span></div>
+      </div>
+    </div>
+    <div class="pill" id="pill" data-tone="muted"><i></i><span>读取中…</span></div>
+  </header>
+
+  <main class="main">
+    <section class="stage" id="stage">
+      <canvas id="view" aria-label="角色 3D 预览"></canvas>
+      <div class="stage-top">
+        <div class="seg" role="tablist" aria-label="预览模型">
+          <button role="tab" data-view="survivor" aria-selected="true">全身</button>
+          <button role="tab" data-view="arms" aria-selected="false">第一人称手臂</button>
+        </div>
+      </div>
+      <div class="stage-bottom">
+        <div class="hint">拖动旋转 · 滚轮缩放 · 双击复位</div>
+        <div class="tools">
+          <button class="tool" id="btnCompare" title="按住查看游戏里现在的样子">按住对比游戏内</button>
+          <button class="tool" id="btnFront">正面</button>
+          <button class="tool" id="btnBack">背面</button>
+          <button class="tool" id="btnSpin" aria-pressed="false">自动旋转</button>
+          <button class="tool" id="btnNight" aria-pressed="false">夜间</button>
+        </div>
+      </div>
+      <div class="loading" id="loading">
+        <div class="loading-bar"><i id="loadingBar"></i></div>
+        <span id="loadingText">正在读取模型…</span>
+      </div>
+    </section>
+
+    <aside class="panel">
+      <div class="panel-scroll">
+        <div id="alerts"></div>
+
+        <section class="block">
+          <div class="block-head">
+            <h2>预设</h2>
+            <div class="history">
+              <button class="icon-btn" id="btnUndo" title="撤销（Ctrl+Z）" aria-label="撤销">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 7 4 12l5 5M4 12h11a5 5 0 0 1 0 10h-2"/></svg>
+              </button>
+              <button class="icon-btn" id="btnRedo" title="重做（Ctrl+Y）" aria-label="重做">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 7 5 5-5 5M20 12H9a5 5 0 0 0 0 10h2"/></svg>
+              </button>
+            </div>
+          </div>
+          <div class="chips" id="presets"></div>
+          <div class="preset-save" id="presetSave"></div>
+        </section>
+
+        <div id="groups"></div>
+
+        <section class="block">
+          <div class="block-head"><h2>夜光</h2><span class="block-note">打开左下角「夜间」预览看效果</span></div>
+          <div class="glow">
+            <input type="range" id="glow" min="0" max="100" step="1" aria-label="夜光强度">
+            <output id="glowVal">原版</output>
+            <button class="mini" id="glowReset" title="使用作者原本的夜光设置">原版</button>
+          </div>
+          <p class="block-hint">原版的夜光几乎看不出。拖动后改用独立遮罩：数值 = 暗处保留的亮度，20–40% 比较自然，100% 等于完全不受光照影响。</p>
+        </section>
+
+        <section class="block" id="safety">
+          <div class="block-head"><h2>安全检查</h2>
+            <div class="history"><button class="mini" id="btnRecheck">重新检查</button><button class="mini" id="btnSelftest" title="在临时文件夹里把应用、恢复、排队、自动同步等完整跑一遍，不碰真实文件">完整自检</button></div>
+          </div>
+          <ul class="checks" id="checks"><li class="check info"><span>正在检查…</span></li></ul>
+          <div class="rows setting">
+            <div class="row">
+              <div class="row-text"><div class="row-name">作者更新后自动同步</div><div class="row-desc">创意工坊版变了，就按你上次应用的搭配自动重新生成</div></div>
+              <div class="row-ctrl"><label class="switch"><input type="checkbox" id="autoSync" aria-label="作者更新后自动同步"><span></span></label></div>
+            </div>
+          </div>
+        </section>
+
+        <p class="footnote">改动先在左侧预览；点「应用到游戏」后，下次进入游戏生效。游戏开着时可以先排队，退出游戏后自动应用。<br>
+          快捷键：Ctrl+Z 撤销 · Ctrl+Y 重做 · Ctrl+S 应用<br>
+          <button class="link" id="btnShortcut">在桌面创建快捷方式</button></p>
+      </div>
+
+      <footer class="actions">
+        <div class="action-status" id="actionStatus">&nbsp;</div>
+        <div class="action-row">
+          <button class="btn ghost" id="btnRestore">恢复原版</button>
+          <button class="btn primary" id="btnApply">应用到游戏</button>
+          <button class="btn icon" id="btnLaunch" title="启动 Left 4 Dead 2" aria-label="启动游戏">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5.5v13l10.5-6.5z"/></svg>
+          </button>
+        </div>
+      </footer>
+    </aside>
+  </main>
+</div>
+
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<dialog id="dlg">
+  <form method="dialog">
+    <h3 id="dlgTitle"></h3>
+    <p id="dlgText"></p>
+    <div class="dlg-row">
+      <button class="btn ghost" value="cancel">取消</button>
+      <button class="btn primary" value="ok" id="dlgOk">确定</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlgTest">
+  <h3 id="testTitle">完整自检</h3>
+  <p id="testSub"></p>
+  <ul class="checks" id="testList"></ul>
+  <div class="dlg-row"><button class="btn primary" id="testClose">关闭</button></div>
+</dialog>
+
+<script type="module" src="/web/app.js"></script>
+</body>
+</html>
