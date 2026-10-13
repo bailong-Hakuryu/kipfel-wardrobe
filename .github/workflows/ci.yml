@@ -50,8 +50,8 @@ jobs:
         # CI 上没有 mod 文件，自检会报「找不到原 mod」；这里只确认 exe 能启动、打包进去的模块都能加载
         shell: pwsh
         run: |
-          Start-Process -FilePath dist\KipfelWardrobe.exe -ArgumentList '--selftest','--json-out','smoke.json' -Wait
-          python -c "import json; d = json.load(open('smoke.json', encoding='utf-8')); assert d['results'], d; print(d['results'][0])"
+          Start-Process -FilePath dist\KipfelWardrobe.exe -ArgumentList '--selftest','--json-out','smoke.json' -WindowStyle Hidden -Wait
+          python -c "import json; d = json.load(open('smoke.json', encoding='utf-8')); assert d['results'], d; print(json.dumps(d['results'][0], ensure_ascii=True))"
       - uses: softprops/action-gh-release@v2
         with:
           files: dist/KipfelWardrobe.exe

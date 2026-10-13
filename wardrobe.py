@@ -8,7 +8,7 @@
   * 创意工坊原文件、游戏本体文件、其他 mod 一律只读；
   * 生成的 VPK 写完先逐文件校验再替换；addonlist.txt 按字节编辑，写前备份、写后核对其他行没变。
 """
-__version__ = '1.0.0'
+__version__ = '1.0.1'
 
 import base64
 import ctypes
