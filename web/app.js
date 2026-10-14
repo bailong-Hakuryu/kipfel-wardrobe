@@ -506,35 +506,40 @@ async function loadChecks() {
 
 let failures = 0;
 let checkKey = '';
+let refreshing = null;
 async function refreshState() {
-  try {
-    state = await getJSON('/api/state');
-    failures = 0;
-    if (state.pending_result) {
-      const r = state.pending_result;
-      const what = r.action === 'apply' ? '应用' : '恢复原版';
-      if (r.reason === 'sync') {
-        toast(r.ok ? '作者更新了 mod，已按你上次应用的搭配自动同步' : `自动同步失败：${r.error}（可以手动点「应用到游戏」）`, !r.ok);
-      } else {
-        toast(r.ok ? `游戏已退出，排队的${what}已自动完成` : `排队的${what}失败：${r.error}`, !r.ok);
+  if (refreshing) return refreshing;
+  refreshing = (async () => {
+    try {
+      state = await getJSON('/api/state');
+      failures = 0;
+      if (state.pending_result) {
+        const r = state.pending_result;
+        const what = r.action === 'apply' ? '应用' : '恢复原版';
+        if (r.reason === 'sync') {
+          toast(r.ok ? '作者更新了 mod，已按你上次应用的搭配自动同步' : `自动同步失败：${r.error}（可以手动点「应用到游戏」）`, !r.ok);
+        } else {
+          toast(r.ok ? `游戏已退出，排队的${what}已自动完成` : `排队的${what}失败：${r.error}`, !r.ok);
+        }
+        postJSON('/api/pending/ack').catch(() => {});
       }
-      postJSON('/api/pending/ack').catch(() => {});
+      // 关键状态变化时重新跑安全检查
+      const k = JSON.stringify([state.mode, state.applied_at, state.local_exists, state.outdated, state.scanning,
+        state.overlaps.map((o) => o.file)]);
+      if (k !== checkKey) { checkKey = k; loadChecks(); }
+      renderStatus();
+      if (comparing) syncViewer();
+    } catch (e) {
+      if (e.message === 'bad token') { location.reload(); return; }  // 工具重启过，令牌已更换
+      if (++failures >= 2) {
+        const pill = $('#pill');
+        pill.dataset.tone = 'danger';
+        pill.querySelector('span').textContent = '工具服务已断开，请重新打开';
+        $('#btnApply').disabled = $('#btnRestore').disabled = true;
+      }
     }
-    // 关键状态变化时重新跑安全检查
-    const k = JSON.stringify([state.mode, state.applied_at, state.local_exists, state.outdated, state.scanning,
-      state.overlaps.map((o) => o.file)]);
-    if (k !== checkKey) { checkKey = k; loadChecks(); }
-    renderStatus();
-    if (comparing) syncViewer();
-  } catch (e) {
-    if (e.message === 'bad token') { location.reload(); return; }  // 工具重启过，令牌已更换
-    if (++failures >= 2) {
-      const pill = $('#pill');
-      pill.dataset.tone = 'danger';
-      pill.querySelector('span').textContent = '工具服务已断开，请重新打开';
-      $('#btnApply').disabled = $('#btnRestore').disabled = true;
-    }
-  }
+  })().finally(() => { refreshing = null; });
+  return refreshing;
 }
 
 let pollTimer = 0;

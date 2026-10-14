@@ -211,15 +211,19 @@ class UserError(Exception):
 
 # ------------------------------------------------------------------ 通用
 
+LOG_LOCK = threading.Lock()
+
+
 def log(*a):
-    try:
-        DATA_DIR.mkdir(exist_ok=True)
-        if LOG_FILE.exists() and LOG_FILE.stat().st_size > LOG_LIMIT:
-            os.replace(LOG_FILE, LOG_FILE.with_name(LOG_FILE.name + '.1'))
-        with open(LOG_FILE, 'a', encoding='utf-8') as f:
-            f.write(time.strftime('%Y-%m-%d %H:%M:%S ') + ' '.join(str(x) for x in a) + '\n')
-    except OSError:
-        pass
+    with LOG_LOCK:
+        try:
+            DATA_DIR.mkdir(exist_ok=True)
+            if LOG_FILE.exists() and LOG_FILE.stat().st_size > LOG_LIMIT:
+                os.replace(LOG_FILE, LOG_FILE.with_name(LOG_FILE.name + '.1'))
+            with open(LOG_FILE, 'a', encoding='utf-8') as f:
+                f.write(time.strftime('%Y-%m-%d %H:%M:%S ') + ' '.join(str(x) for x in a) + '\n')
+        except OSError:
+            pass
 
 
 SETTINGS_LOCK = threading.RLock()
@@ -413,21 +417,30 @@ def _hex_to_vec(color):
 def patch_vmt(text, glow, tint):
     """glow: None = 保持作者的自发光设置；0~100 = 改用纯色遮罩控制自发光比例。"""
     lines = text.replace('\r\n', '\n').split('\n')
-    has_selfillum = any(re.match(r'\s*"?\$selfillum"?\s+"?1', l, re.I) for l in lines)
+    def code(line):
+        return line.split('//', 1)[0]
+
+    has_selfillum = any(re.match(r'\s*"?\$selfillum"?\s+"?1', code(l), re.I) for l in lines)
     use_mask = has_selfillum and glow is not None
     out = []
     for l in lines:
-        if re.match(r'\s*"?\$color2"?\s', l, re.I):
+        c = code(l)
+        if re.match(r'\s*"?\$color2"?\s', c, re.I):
             continue
-        if use_mask and re.match(r'\s*"?\$selfillum(tint|mask)"?\s', l, re.I):
+        if use_mask and re.match(r'\s*"?\$selfillum(tint|mask)"?\s', c, re.I):
             continue
         out.append(l)
-    while out and not out[-1].strip():
+    while out and not code(out[-1]).strip():
         out.pop()
-    body = '\n'.join(out)
-    if body.count('{') <= body.count('}'):  # 已闭合：去掉最后的 }，统一在末尾补上
-        idx = body.rstrip().rfind('}')
-        body = body[:idx].rstrip()
+    code_lines = [code(l) for l in out]
+    if sum(l.count('{') for l in code_lines) <= sum(l.count('}') for l in code_lines):
+        # 只在代码中定位闭合括号，避免把 } // } 中的注释括号当作材质块结尾。
+        for i in range(len(out) - 1, -1, -1):
+            idx = code_lines[i].rfind('}')
+            if idx >= 0:
+                out = out[:i] + [out[i][:idx]]
+                break
+    body = '\n'.join(out).rstrip()
     if use_mask:
         body += '\n\t$selfillumtint "[1 1 1]"\n\t$selfillummask "%s%s"' % (MAT_REF, GLOWMASK_NAME)
     if tint:
@@ -673,58 +686,73 @@ class OverlapScanner:
         self.result, self.scanning, self.done_at = [], False, 0.0
         self.cache_file = DATA_DIR / 'overlap_cache.json'
         self.lock = threading.Lock()
+        self.gen = 0
+
+    def reset(self):
+        with self.lock:
+            self.gen += 1
+            self.result, self.done_at = [], 0.0
 
     def start(self):
         with self.lock:
+            self.gen += 1
             if self.scanning:
                 return
             self.scanning = True
-        threading.Thread(target=self._run, daemon=True).start()
+            gen = self.gen
+        threading.Thread(target=self._run, args=(gen,), daemon=True).start()
 
-    def _run(self):
-        try:
-            _ver, _vmts, footprint = SOURCE.info()
-            fp_hash = hashlib.sha1('\n'.join(sorted(footprint)).encode()).hexdigest()[:12]
+    def _run(self, gen):
+        while True:
             try:
-                cache = json.loads(self.cache_file.read_text(encoding='utf-8'))
-            except (OSError, ValueError):
-                cache = {}
-            found, new_cache = [], {}
-            files = sorted(ADDONS.glob('*.vpk')) + sorted((ADDONS / 'workshop').glob('*.vpk'))
-            for f in files:
-                if f.name.lower() in (LOCAL_NAME, WORKSHOP_ID + '.vpk'):
-                    continue
+                addons, data_dir, cache_file = ADDONS, DATA_DIR, self.cache_file
+                _ver, _vmts, footprint = SOURCE.info()
+                fp_hash = hashlib.sha1('\n'.join(sorted(footprint)).encode()).hexdigest()[:12]
                 try:
-                    sig = file_sig(f)
-                except OSError:
-                    continue
-                key = str(f)
-                info = cache.get(key)
-                if not (info and info.get('sig') == sig and info.get('fp') == fp_hash):
-                    info = dict(sig=sig, fp=fp_hash, cats=[], count=0, title='')
+                    cache = json.loads(cache_file.read_text(encoding='utf-8'))
+                except (OSError, ValueError):
+                    cache = {}
+                found, new_cache = [], {}
+                files = sorted(addons.glob('*.vpk')) + sorted((addons / 'workshop').glob('*.vpk'))
+                for f in files:
+                    if f.name.lower() in (LOCAL_NAME, WORKSHOP_ID + '.vpk'):
+                        continue
                     try:
-                        entries, _ = srcfmt.vpk_read_tree(str(f))
-                        names = {e.path.lower() for e in entries}
-                        overlap = names & footprint
-                        info['count'] = len(overlap)
-                        info['cats'] = sorted({path_category(p) for p in overlap})
-                        if overlap and 'addoninfo.txt' in names:
-                            with srcfmt.VpkReader(str(f)) as r:
-                                m = re.search(r'addontitle"?\s+"([^"]*)"', r.read('addoninfo.txt').decode('utf-8', 'replace'), re.I)
-                                info['title'] = m.group(1).strip() if m else ''
-                    except (OSError, ValueError, struct.error, IndexError):
-                        pass
-                new_cache[key] = info
-                if info['count']:
-                    rel = ('workshop\\' if f.parent.name.lower() == 'workshop' else '') + f.name
-                    found.append(dict(file=rel, title=info['title'], cats=info['cats'], count=info['count']))
-            DATA_DIR.mkdir(exist_ok=True)
-            self.cache_file.write_text(json.dumps(new_cache), encoding='utf-8')
-            self.result, self.done_at = found, time.time()
-        except Exception:
-            log('overlap scan failed', traceback.format_exc())
-        finally:
-            self.scanning = False
+                        sig = file_sig(f)
+                    except OSError:
+                        continue
+                    key = str(f)
+                    info = cache.get(key)
+                    if not (info and info.get('sig') == sig and info.get('fp') == fp_hash):
+                        info = dict(sig=sig, fp=fp_hash, cats=[], count=0, title='')
+                        try:
+                            entries, _ = srcfmt.vpk_read_tree(str(f))
+                            names = {e.path.lower() for e in entries}
+                            overlap = names & footprint
+                            info['count'] = len(overlap)
+                            info['cats'] = sorted({path_category(p) for p in overlap})
+                            if overlap and 'addoninfo.txt' in names:
+                                with srcfmt.VpkReader(str(f)) as r:
+                                    m = re.search(r'addontitle"?\s+"([^"]*)"', r.read('addoninfo.txt').decode('utf-8', 'replace'), re.I)
+                                    info['title'] = m.group(1).strip() if m else ''
+                        except (OSError, ValueError, struct.error, IndexError):
+                            pass
+                    new_cache[key] = info
+                    if info['count']:
+                        rel = ('workshop\\' if f.parent.name.lower() == 'workshop' else '') + f.name
+                        found.append(dict(file=rel, title=info['title'], cats=info['cats'], count=info['count']))
+                with self.lock:
+                    if self.gen == gen:
+                        data_dir.mkdir(exist_ok=True)
+                        cache_file.write_text(json.dumps(new_cache), encoding='utf-8')
+                        self.result, self.done_at = found, time.time()
+            except Exception:
+                log('overlap scan failed', traceback.format_exc())
+            with self.lock:
+                if self.gen == gen or not WORKSHOP_VPK.exists():
+                    self.scanning = False
+                    return
+                gen = self.gen
 
 
 SCANNER = OverlapScanner()
@@ -1153,7 +1181,7 @@ def change_game_dir(path):
     update_settings(lambda st: st.__setitem__('game_dir', str(game)))
     set_paths(game, DATA_DIR)
     SOURCE.sig = None
-    SCANNER.result, SCANNER.done_at = [], 0.0
+    SCANNER.reset()
     if WORKSHOP_VPK.exists():
         SCANNER.start()
     log('game dir set to', game)

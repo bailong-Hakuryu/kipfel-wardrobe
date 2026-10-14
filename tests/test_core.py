@@ -3,6 +3,7 @@
 需要原 mod 文件的完整流程测试见 selftest.py（python wardrobe.py --selftest）。
 """
 import http.client
+import json
 import os
 import re
 import shutil
@@ -13,6 +14,7 @@ import threading
 import unittest
 import zlib
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -170,12 +172,31 @@ class VmtTests(unittest.TestCase):
         self.assertNotIn('$selfillummask', out)
 
     def test_mask_and_tint(self):
-        out = W.patch_vmt(self.SRC, 30, '#ff0000')
+        out = W.patch_vmt(self.SRC + '}\n// trailing comment\n', 30, '#ff0000')
         self.assertIn('$selfillummask', out)
         self.assertIn('$selfillumtint "[1 1 1]"', out)
         self.assertNotIn('[0.2 0.2 0.2]', out)
         self.assertIn('$color2 "[1.000 0.000 0.000]"', out)
         self.assertEqual(out.count('{'), out.count('}'))
+
+    def test_commented_selfillum_does_not_enable_glow(self):
+        text = '"VertexlitGeneric"\n{\n\t$basetexture "x/hair"\n\t// $selfillum 1\n}\n'
+        self.assertNotIn('$selfillummask', W.patch_vmt(text, 30, None))
+
+    def test_comment_braces_do_not_close_material(self):
+        for ending in ('} // }\n', '} // {\n', '}\n// trailing { }\n'):
+            with self.subTest(ending=ending):
+                out = W.patch_vmt(self.SRC + ending, 30, '#ff0000')
+                depth = 0
+                for line in out.splitlines():
+                    code = line.split('//', 1)[0]
+                    if any(key in code for key in ('$color2', '$selfillumtint', '$selfillummask')):
+                        self.assertEqual(depth, 1, '材质参数必须位于最外层材质块内部')
+                    depth += code.count('{') - code.count('}')
+                    self.assertGreaterEqual(depth, 0)
+                self.assertEqual(depth, 0)
+                self.assertIn('$color2 "[1.000 0.000 0.000]"', out)
+                self.assertIn('$selfillummask', out)
 
 
 class AddonlistTests(unittest.TestCase):
@@ -206,6 +227,68 @@ class AddonlistTests(unittest.TestCase):
 
 
 class ServerTests(unittest.TestCase):
+    def test_scanner_directory_switch_discards_old_results(self):
+        root = Path(tempfile.mkdtemp(dir=_TMP))
+        old_game, new_game = root / 'old', root / 'new'
+        for game, title in ((old_game, 'OldMod'), (new_game, 'NewMod')):
+            addons = game / 'left4dead2' / 'addons'
+            (addons / 'workshop').mkdir(parents=True)
+            (game / 'left4dead2' / 'gameinfo.txt').write_text('GameInfo{}', encoding='utf-8')
+            srcfmt.vpk_write(str(addons / 'workshop' / (W.WORKSHOP_ID + '.vpk')),
+                             [('materials/models/kipfel/hair.vmt', b'x')])
+            srcfmt.vpk_write(str(addons / 'other.vpk'),
+                             [('materials/models/kipfel/hair.vmt', b'x'),
+                              ('addoninfo.txt', ('addonTitle "%s"\n' % title).encode())])
+        old_paths = W.GAME_DIR, W.DATA_DIR
+
+        def restore_paths():
+            W.set_paths(*old_paths)
+            W.SOURCE.sig = None
+
+        self.addCleanup(restore_paths)
+        scanner = W.OverlapScanner()
+        old_started, new_started = threading.Event(), threading.Event()
+        release_old, release_new = threading.Event(), threading.Event()
+        read_tree, run_scan = srcfmt.vpk_read_tree, scanner._run
+        workers = []
+
+        def paused_read(path):
+            p = Path(path)
+            if p.name == 'other.vpk':
+                started, release = ((old_started, release_old) if old_game in p.parents
+                                    else (new_started, release_new))
+                started.set()
+                if not release.wait(5):
+                    raise AssertionError('扫描暂停超时')
+            return read_tree(path)
+
+        def tracked_run(*args):
+            workers.append(threading.current_thread())
+            return run_scan(*args)
+
+        with mock.patch.object(W, 'SCANNER', scanner), \
+                mock.patch.object(srcfmt, 'vpk_read_tree', side_effect=paused_read), \
+                mock.patch.object(scanner, '_run', side_effect=tracked_run):
+            W.set_paths(old_game, root / 'data')
+            W.SOURCE.sig = None
+            try:
+                scanner.start()
+                self.assertTrue(old_started.wait(5), '旧目录扫描没有启动')
+                W.change_game_dir(str(new_game))
+                release_old.set()
+                self.assertTrue(new_started.wait(5), '切换目录后没有自动重扫')
+                self.assertEqual(scanner.result, [], '旧目录结果不应发布到新目录')
+            finally:
+                release_old.set()
+                release_new.set()
+                for worker in workers:
+                    worker.join(5)
+                    self.assertFalse(worker.is_alive(), '扫描线程没有结束')
+            self.assertFalse(scanner.scanning)
+            self.assertEqual([x['title'] for x in scanner.result], ['NewMod'])
+            cache = json.loads(scanner.cache_file.read_text(encoding='utf-8'))
+            self.assertEqual(set(cache), {str(new_game / 'left4dead2' / 'addons' / 'other.vpk')})
+
     def test_exclusive_port(self):
         s1 = W.Server(('127.0.0.1', 0), W.Handler)
         try:
